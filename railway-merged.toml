@@ -1,0 +1,34 @@
+# Railway 合并部署配置
+# 使用此配置将所有服务合并部署到一个 Railway 服务中
+
+[build]
+builder = "nixpacks"
+
+# 安装所有依赖
+buildCommand = "pip install -r services/gateway/requirements.txt -r services/user-service/requirements.txt -r services/ai-service/requirements.txt -r services/order-service/requirements.txt -r services/notification-service/requirements.txt"
+
+[deploy]
+startCommand = "python start_all.py"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# 环境变量配置示例
+# 在 Railway 控制台中设置以下环境变量：
+
+# [variables]
+# JWT_SECRET_KEY = "your-secret-key-here"
+# JWT_ALGORITHM = "HS256"
+#
+# # MySQL 配置（使用 Railway MySQL 插件时自动提供）
+# MYSQL_HOST = "mysql.railway.internal"
+# MYSQL_PORT = "3306"
+# MYSQL_USER = "root"
+# MYSQL_PASSWORD = "your-mysql-password"
+# MYSQL_DATABASE = "railway"
+#
+# # Redis 配置（使用 Railway Redis 插件时自动提供）
+# REDIS_HOST = "redis.railway.internal"
+# REDIS_PORT = "6379"
+# REDIS_PASSWORD = "your-redis-password"

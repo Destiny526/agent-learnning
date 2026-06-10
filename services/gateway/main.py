@@ -79,6 +79,23 @@ async def health_check():
     return {"status": "healthy", "service": "gateway"}
 
 
+@app.get("/api/health")
+async def api_health_check():
+    """API 健康检查端点"""
+    return {
+        "status": "healthy",
+        "service": "gateway",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "services": {
+            "user": SERVICE_URLS["user"],
+            "ticket": SERVICE_URLS["ticket"],
+            "ai": SERVICE_URLS["ai"],
+            "order": SERVICE_URLS["order"],
+            "notification": SERVICE_URLS["notification"],
+        }
+    }
+
+
 @app.post("/api/auth/register")
 async def register(request: Request):
     return await _forward("post", f"{SERVICE_URLS['user']}/api/auth/register", json=await request.json())
@@ -406,4 +423,5 @@ async def send_notification(request: Request, credentials: HTTPAuthorizationCred
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
