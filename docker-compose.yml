@@ -1,0 +1,85 @@
+# ============================================================
+# AI 智能出行助手 - Docker Compose 配置
+# 一键启动: docker compose up -d
+# ============================================================
+
+services:
+  # ── MySQL 数据库 ──
+  mysql:
+    image: mysql:8.0
+    container_name: travel-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-travel_assistant}
+      MYSQL_USER: ${MYSQL_USER:-travel_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-password}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./infrastructure/mysql/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-123456}"]
+      timeout: 20s
+      retries: 10
+      interval: 10s
+    networks:
+      - travel-network
+
+  # ── Redis 缓存 ──
+  redis:
+    image: redis:7-alpine
+    container_name: travel-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 10s
+      retries: 5
+      interval: 10s
+    networks:
+      - travel-network
+
+  # ── Next.js 前端 + API ──
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: travel-frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      # 数据库配置
+      DATABASE_URL: "mysql://root:${MYSQL_ROOT_PASSWORD:-123456}@mysql:3306/${MYSQL_DATABASE:-travel_assistant}"
+      # Redis 配置
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # JWT 配置
+      JWT_SECRET: ${JWT_SECRET:-ai-travel-assistant-secret-key-2026}
+      # 应用配置
+      NEXT_PUBLIC_USE_MOCK: "false"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - travel-network
+
+# ── 数据卷 ──
+volumes:
+  mysql-data:
+    driver: local
+  redis-data:
+    driver: local
+
+# ── 网络 ──
+networks:
+  travel-network:
+    driver: bridge

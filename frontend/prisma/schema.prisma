@@ -1,0 +1,94 @@
+// ============================================================
+// Prisma Schema — AI 智能出行助手
+// 数据库：MySQL 8.0
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ── 用户表 ────────────────────────────────────────────────────
+
+model User {
+  id           Int       @id @default(autoincrement())
+  phone        String    @unique @db.VarChar(20)
+  email        String?   @db.VarChar(100)
+  nickname     String    @db.VarChar(50)
+  avatar       String?   @db.VarChar(500)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  orders       Order[]
+  favorites    Favorite[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+// ── 订单表 ────────────────────────────────────────────────────
+
+model Order {
+  id        Int      @id @default(autoincrement())
+  orderNo   String   @unique @map("order_no") @db.VarChar(50)
+  status    String   @default("pending") @db.VarChar(20) // pending | paid | completed | cancelled
+  userId    Int      @map("user_id")
+  tripData  Json     @map("trip_data")    // 出行信息 JSON: { origin, destination, trainNo, date, departure, arrival, ... }
+  seatType  String   @map("seat_type") @db.VarChar(30)
+  price     Decimal  @db.Decimal(10, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("orders")
+}
+
+// ── 收藏表 ────────────────────────────────────────────────────
+
+model Favorite {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  type           String   @db.VarChar(20)      // high_speed | flight | train
+  origin         String   @db.VarChar(50)
+  destination    String   @db.VarChar(50)
+  fromStation    String?  @map("from_station") @db.VarChar(100)
+  toStation      String?  @map("to_station") @db.VarChar(100)
+  trainNo        String?  @map("train_no") @db.VarChar(20)
+  departureDate  String?  @map("departure_date") @db.VarChar(20)
+  departureTime  String   @map("departure_time") @db.VarChar(10)
+  arrivalTime    String   @map("arrival_time") @db.VarChar(10)
+  duration       String?  @db.VarChar(20)
+  price          Decimal  @db.Decimal(10, 2)
+  aiScore        Int      @map("ai_score")     // AI 评分 0-100
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("favorites")
+}
+
+// ── 通知表 ────────────────────────────────────────────────────
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  type      String   @db.VarChar(20)   // order | favorite | system
+  title     String   @db.VarChar(100)
+  content   String   @db.Text
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isRead])
+  @@map("notifications")
+}

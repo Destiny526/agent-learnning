@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hero 背景网格 */
+.hero-grid {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 80px 80px;
+}
+
+/* 毛玻璃效果 */
+.glass {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* 搜索栏悬浮阴影 */
+.search-shadow {
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* 卡片悬停效果 */
+.card-hover {
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.1);
+}
+
+/* AI 标签渐变 */
+.ai-gradient {
+  background: linear-gradient(135deg, #7c3aed, #ec4899);
+}
+
+/* AI 标签发光 */
+.ai-glow {
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.3);
+}
+
+/* 微光粒子 */
+@keyframes particle {
+  0%, 100% { transform: translate(0, 0); opacity: 0.3; }
+  25% { transform: translate(30px, -40px); opacity: 0.6; }
+  50% { transform: translate(-20px, -80px); opacity: 0.4; }
+  75% { transform: translate(40px, -30px); opacity: 0.5; }
+}
+
+.particle {
+  animation: particle var(--duration, 20s) linear infinite;
+  animation-delay: var(--delay, 0s);
+}
+
+/* 光晕呼吸 */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.15; }
+  50% { transform: scale(1.15); opacity: 0.25; }
+}
+
+.breathe {
+  animation: breathe 8s ease-in-out infinite;
+}
+
+/* 数字滚动 */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 渐入动画初始状态 */
+.animate-initial-hidden {
+  opacity: 0;
+  transform: translateY(24px);
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* 扫描线效果 */
+@keyframes scanLine {
+  0% { top: -10%; }
+  100% { top: 110%; }
+}
+
+/* 横向滚动容器 */
+.scroll-container {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scroll-container::-webkit-scrollbar {
+  display: none;
+}
