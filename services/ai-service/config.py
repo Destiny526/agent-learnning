@@ -38,6 +38,28 @@ class Settings:
     CACHE_TICKET_TTL: int = 3600     # 1 hour
     CACHE_EMPTY_TTL: int = 300       # 5 min
 
+    # LLM Configuration
+    DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
+    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+    LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "60"))
+    LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
+    LLM_FALLBACK_ENABLED: bool = os.getenv("LLM_FALLBACK_ENABLED", "true").lower() == "true"
+
+    # Qdrant Configuration
+    QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
+    QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
+    QDRANT_COLLECTION_HOTELS: str = "hotels"
+    QDRANT_COLLECTION_ATTRACTIONS: str = "attractions"
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1536"))
+
+    # Task Configuration
+    TASK_TTL: int = int(os.getenv("TASK_TTL", "3600"))  # 1 hour
+    TASK_POLL_INTERVAL: int = int(os.getenv("TASK_POLL_INTERVAL", "2"))
+
     def __post_init__(self):
         if self.COMFORT_SCORES is None:
             self.COMFORT_SCORES = {

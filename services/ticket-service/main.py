@@ -5,6 +5,11 @@ from datetime import datetime
 from typing import Optional, List
 from scraper_12306 import fetch_tickets, STATION_CODES
 from scraper_flights import fetch_flights
+from redis_client import get_redis
+from lock_manager import StockManager
+import logging
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Travel Assistant - Ticket Service",
@@ -18,6 +23,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Lazy-initialized stock manager
+_stock_manager = None
+
+
+def get_stock_manager() -> StockManager | None:
+    """Get stock manager (lazy initialization)."""
+    global _stock_manager
+    if _stock_manager is None:
+        redis = get_redis()
+        if redis:
+            _stock_manager = StockManager(redis)
+    return _stock_manager
 
 
 class TicketResponse(BaseModel):
@@ -33,6 +51,18 @@ class TicketResponse(BaseModel):
     price: float
     seat_type: str
     available_seats: int
+
+
+class BookTicketRequest(BaseModel):
+    ticket_id: str
+    quantity: int = 1
+
+
+class BookTicketResponse(BaseModel):
+    reservation_id: str
+    ticket_id: str
+    quantity: int
+    status: str
 
 
 @app.get("/")
@@ -66,11 +96,14 @@ async def search_tickets(
 
     # 转为统一格式
     results = []
+    stock_manager = get_stock_manager()
+
     for i, t in enumerate(all_tickets):
         # 航班数据
         if "flight_no" in t:
+            ticket_id = f"{t['flight_no']}_{date}"
             results.append(TicketResponse(
-                id=f"{t['flight_no']}_{date}",
+                id=ticket_id,
                 ticket_type="flight",
                 train_no=t["flight_no"],
                 origin=t["origin"],
@@ -83,6 +116,9 @@ async def search_tickets(
                 seat_type=t.get("seat_class", "经济舱"),
                 available_seats=t.get("available_seats", 0),
             ))
+            # Initialize stock in Redis
+            if stock_manager and t.get("available_seats", 0) > 0:
+                stock_manager.init_stock(ticket_id, t["available_seats"])
             continue
 
         # 火车/高铁数据
@@ -123,8 +159,9 @@ async def search_tickets(
             best_price = 178
             best_count = 0
 
+        ticket_id = f"{t['train_no']}_{date}"
         results.append(TicketResponse(
-            id=f"{t['train_no']}_{date}",
+            id=ticket_id,
             ticket_type=t["ticket_type"],
             train_no=t["train_no"],
             origin=t["origin"],
@@ -138,7 +175,67 @@ async def search_tickets(
             available_seats=best_count,
         ))
 
+        # Initialize stock in Redis
+        if stock_manager and best_count > 0:
+            stock_manager.init_stock(ticket_id, best_count)
+
     return results
+
+
+@app.post("/api/tickets/book", response_model=BookTicketResponse)
+async def book_ticket(request: BookTicketRequest):
+    """
+    Book a ticket with atomic stock decrement.
+    Returns success with reservation ID, or 409 if out of stock.
+    """
+    stock_manager = get_stock_manager()
+    if not stock_manager:
+        raise HTTPException(status_code=503, detail="Stock management unavailable (Redis not configured)")
+
+    if request.quantity < 1 or request.quantity > 5:
+        raise HTTPException(status_code=400, detail="Quantity must be between 1 and 5")
+
+    result, reservation_id = stock_manager.try_decrement(request.ticket_id, request.quantity)
+
+    if result == -1:
+        raise HTTPException(status_code=404, detail="Ticket not found or inventory not initialized")
+    if result == 0:
+        raise HTTPException(status_code=409, detail="Insufficient stock")
+
+    return BookTicketResponse(
+        reservation_id=reservation_id,
+        ticket_id=request.ticket_id,
+        quantity=request.quantity,
+        status="reserved",
+    )
+
+
+@app.post("/api/tickets/rollback")
+async def rollback_ticket(
+    ticket_id: str = Query(..., description="票务 ID"),
+    quantity: int = Query(1, ge=1, le=5, description="回滚数量"),
+):
+    """Rollback stock (e.g., on order failure)."""
+    stock_manager = get_stock_manager()
+    if not stock_manager:
+        raise HTTPException(status_code=503, detail="Stock management unavailable")
+
+    success = stock_manager.rollback(ticket_id, quantity)
+    if not success:
+        raise HTTPException(status_code=404, detail="Ticket stock not found")
+
+    return {"success": True, "ticket_id": ticket_id, "quantity": quantity}
+
+
+@app.get("/api/tickets/stock/{ticket_id}")
+async def get_stock(ticket_id: str):
+    """Get current stock count for a ticket."""
+    stock_manager = get_stock_manager()
+    if not stock_manager:
+        raise HTTPException(status_code=503, detail="Stock management unavailable")
+
+    stock = stock_manager.get_stock(ticket_id)
+    return {"ticket_id": ticket_id, "stock": stock}
 
 
 @app.get("/api/tickets/recommend")

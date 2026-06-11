@@ -10,4 +10,4 @@ COPY . .
 
 EXPOSE 8002
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["gunicorn", "-c", "gunicorn_conf.py", "main:app"]

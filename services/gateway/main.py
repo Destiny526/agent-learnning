@@ -1,6 +1,5 @@
 """API Gateway - 统一入口，转发请求到各微服务"""
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
@@ -38,17 +37,136 @@ SERVICE_URLS = {
     "notification": os.getenv("NOTIFICATION_SERVICE_URL", "http://localhost:8005"),
 }
 
-security = HTTPBearer(auto_error=False)
+# ── 公开接口白名单（不需要 JWT 验证）───────────────────────────────────
+
+PUBLIC_PATHS = {
+    "/",
+    "/api/health",
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/auth/refresh",
+    "/api/tickets/search",
+    "/api/tickets/recommend",
+    "/api/ai/config",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+}
+
+# 前缀匹配的公开路径
+PUBLIC_PREFIXES = [
+    "/api/tickets/detail",
+    "/api/ai/recommend",
+    "/api/ai/trip-plan",
+    "/api/ai/tasks",
+    "/api/ai/health",
+]
+
+
+# ── JWT 辅助函数 ──────────────────────────────────────────────────────
+
+def _extract_user_id(payload: dict) -> int | None:
+    """从 JWT payload 提取用户 ID，兼容新旧两种格式"""
+    # 优先取 sub（标准格式）
+    sub = payload.get("sub")
+    if sub is not None:
+        try:
+            return int(sub)
+        except (ValueError, TypeError):
+            pass
+    # 兼容旧前端格式 { userId, phone }
+    user_id = payload.get("userId")
+    if user_id is not None:
+        try:
+            return int(user_id)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _extract_user_role(payload: dict, user_id: int) -> str:
+    """从 JWT payload 提取用户角色，暂时简单判断"""
+    # 优先从 payload 中获取角色
+    role = payload.get("role")
+    if role:
+        return role
+    # 默认为普通用户（后续可从数据库或缓存查询真实角色）
+    return "admin" if user_id == 1 else "user"
+
+
+# ── 全局鉴权中间件 ────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """全局鉴权中间件：拦截所有请求，验证 JWT 并注入用户信息"""
+    path = request.url.path
+
+    # 1. 公开接口直接放行
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    # 前缀匹配检查
+    for prefix in PUBLIC_PREFIXES:
+        if path.startswith(prefix):
+            return await call_next(request)
+
+    # 2. 提取 Authorization header
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Not authenticated"}
+        )
+
+    token = auth_header[7:]
+
+    # 3. 解析 JWT
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+
+    # 4. 提取用户信息
+    user_id = _extract_user_id(payload)
+    if user_id is None:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token payload"}
+        )
+
+    # 5. 提取角色信息
+    user_role = _extract_user_role(payload, user_id)
+
+    # 6. 注入到 request.state 供路由函数使用
+    request.state.user_id = user_id
+    request.state.user_role = user_role
+    request.state.token = token
+
+    response = await call_next(request)
+    return response
 
 
 # ── Helpers ────────────────────────────────────────────────────────
 
-async def _forward(method: str, url: str, **kwargs) -> JSONResponse:
-    """通用请求转发，返回 JSONResponse"""
+async def _forward(method: str, url: str, request: Request = None, **kwargs) -> JSONResponse:
+    """通用请求转发，返回 JSONResponse，自动注入用户信息到请求头"""
+    headers = kwargs.pop("headers", {})
+
+    # 从 request.state 注入用户信息到下游请求头
+    if request and hasattr(request.state, "user_id"):
+        headers["X-User-Id"] = str(request.state.user_id)
+        headers["X-User-Role"] = request.state.user_role
+        # 保留原始 Authorization header
+        if hasattr(request.state, "token"):
+            headers["Authorization"] = f"Bearer {request.state.token}"
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             resp = getattr(client, method)
-            response = await resp(url, **kwargs)
+            response = await resp(url, headers=headers, **kwargs)
             return JSONResponse(
                 status_code=response.status_code,
                 content=response.json() if response.content else None,
@@ -57,19 +175,6 @@ async def _forward(method: str, url: str, **kwargs) -> JSONResponse:
             return JSONResponse(status_code=503, content={"detail": "Service unavailable"})
         except Exception as e:
             return JSONResponse(status_code=500, content={"detail": str(e)})
-
-
-async def _get_current_user_id(credentials: HTTPAuthorizationCredentials) -> int:
-    """从 JWT token 解析 user_id"""
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return int(user_id)
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 
 # ── Auth (公开接口) ────────────────────────────────────────────────
@@ -114,31 +219,25 @@ async def refresh(request: Request):
 # ── User (需登录) ─────────────────────────────────────────────────
 
 @app.get("/api/user/profile")
-async def get_profile(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("get", f"{SERVICE_URLS['user']}/api/user/profile",
-                          headers={"Authorization": f"Bearer {token}"})
+async def get_profile(request: Request):
+    return await _forward("get", f"{SERVICE_URLS['user']}/api/user/profile", request=request)
 
 
 @app.put("/api/user/profile")
-async def update_profile(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
+async def update_profile(request: Request):
     return await _forward("put", f"{SERVICE_URLS['user']}/api/user/profile",
-                          json=await request.json(),
-                          headers={"Authorization": f"Bearer {token}"})
+                          json=await request.json(), request=request)
 
 
 @app.delete("/api/user/profile")
-async def delete_profile(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("delete", f"{SERVICE_URLS['user']}/api/user/profile",
-                          headers={"Authorization": f"Bearer {token}"})
+async def delete_profile(request: Request):
+    return await _forward("delete", f"{SERVICE_URLS['user']}/api/user/profile", request=request)
+
+
+@app.post("/api/user/change-password")
+async def change_password(request: Request):
+    return await _forward("post", f"{SERVICE_URLS['user']}/api/user/change-password",
+                          json=await request.json(), request=request)
 
 
 # ── Tickets (公开接口，不需要登录) ─────────────────────────────────
@@ -330,93 +429,208 @@ async def ai_config():
     return await _forward("get", f"{SERVICE_URLS['ai']}/api/ai/config")
 
 
+@app.get("/api/ai/health")
+async def ai_health():
+    return await _forward("get", f"{SERVICE_URLS['ai']}/api/ai/health")
+
+
+@app.post("/api/ai/trip-plan")
+async def ai_trip_plan(request: Request):
+    """LLM 行程规划（同步模式）"""
+    return await _forward("post", f"{SERVICE_URLS['ai']}/api/ai/trip-plan",
+                          json=await request.json())
+
+
+@app.post("/api/ai/trip-plan/stream")
+async def ai_trip_plan_stream(request: Request):
+    """SSE 流式行程规划 - 流式透传"""
+    from fastapi.responses import StreamingResponse
+
+    body = await request.json()
+
+    async def stream_generator():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10)) as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    f"{SERVICE_URLS['ai']}/api/ai/trip-plan/stream",
+                    json=body,
+                    headers={"Accept": "text/event-stream"},
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+            except Exception as e:
+                yield f"event: error\ndata: {{\"error\": \"{str(e)}\"}}\n\n".encode()
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/ai/tasks/{task_id}")
+async def ai_task_status(task_id: str, request: Request):
+    """查询任务状态"""
+    return await _forward("get", f"{SERVICE_URLS['ai']}/api/ai/tasks/{task_id}")
+
+
+@app.get("/api/ai/tasks/{task_id}/stream")
+async def ai_task_stream(task_id: str, request: Request):
+    """SSE 监听任务进度 - 流式透传"""
+    from fastapi.responses import StreamingResponse
+
+    async def stream_generator():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10)) as client:
+            try:
+                async with client.stream(
+                    "GET",
+                    f"{SERVICE_URLS['ai']}/api/ai/tasks/{task_id}/stream",
+                    headers={"Accept": "text/event-stream"},
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+            except Exception as e:
+                yield f"event: error\ndata: {{\"error\": \"{str(e)}\"}}\n\n".encode()
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── Orders (需登录) ───────────────────────────────────────────────
 
 @app.post("/api/orders")
-async def create_order(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
+async def create_order(request: Request):
     return await _forward("post", f"{SERVICE_URLS['order']}/api/orders",
-                          json=await request.json(),
-                          headers={"Authorization": f"Bearer {token}"})
+                          json=await request.json(), request=request)
 
 
 @app.get("/api/orders")
-async def get_orders(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("get", f"{SERVICE_URLS['order']}/api/orders",
-                          headers={"Authorization": f"Bearer {token}"})
+async def get_orders(request: Request):
+    return await _forward("get", f"{SERVICE_URLS['order']}/api/orders", request=request)
 
 
 @app.get("/api/orders/{order_id}")
-async def get_order(order_id: int, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("get", f"{SERVICE_URLS['order']}/api/orders/{order_id}",
-                          headers={"Authorization": f"Bearer {token}"})
+async def get_order(order_id: int, request: Request):
+    return await _forward("get", f"{SERVICE_URLS['order']}/api/orders/{order_id}", request=request)
 
 
 @app.delete("/api/orders/{order_id}")
-async def cancel_order(order_id: int, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("delete", f"{SERVICE_URLS['order']}/api/orders/{order_id}",
-                          headers={"Authorization": f"Bearer {token}"})
+async def cancel_order(order_id: int, request: Request):
+    return await _forward("delete", f"{SERVICE_URLS['order']}/api/orders/{order_id}", request=request)
 
 
 # ── Favorites (需登录) ────────────────────────────────────────────
 
 @app.get("/api/favorites")
-async def get_favorites(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("get", f"{SERVICE_URLS['order']}/api/favorites",
-                          headers={"Authorization": f"Bearer {token}"})
+async def get_favorites(request: Request):
+    return await _forward("get", f"{SERVICE_URLS['order']}/api/favorites", request=request)
 
 
 @app.post("/api/favorites")
-async def add_favorite(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
+async def add_favorite(request: Request):
     body = await request.json()
     return await _forward("post", f"{SERVICE_URLS['order']}/api/favorites",
-                          params={"ticket_id": body.get("ticket_id")},
-                          headers={"Authorization": f"Bearer {token}"})
+                          params={"ticket_id": body.get("ticket_id")}, request=request)
 
 
 @app.delete("/api/favorites/{favorite_id}")
-async def remove_favorite(favorite_id: int, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = credentials.credentials
-    return await _forward("delete", f"{SERVICE_URLS['order']}/api/favorites/{favorite_id}",
-                          headers={"Authorization": f"Bearer {token}"})
+async def remove_favorite(favorite_id: int, request: Request):
+    return await _forward("delete", f"{SERVICE_URLS['order']}/api/favorites/{favorite_id}", request=request)
 
 
 # ── Notifications (需登录) ────────────────────────────────────────
 
 @app.get("/api/notifications")
-async def get_notifications(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    user_id = await _get_current_user_id(credentials)
+async def get_notifications(request: Request):
+    user_id = request.state.user_id
     return await _forward("get", f"{SERVICE_URLS['notification']}/api/notifications/{user_id}",
-                          params=dict(request.query_params))
+                          params=dict(request.query_params), request=request)
 
 
 @app.post("/api/notifications")
-async def send_notification(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def send_notification(request: Request):
     return await _forward("post", f"{SERVICE_URLS['notification']}/api/notifications",
-                          json=await request.json())
+                          json=await request.json(), request=request)
+
+
+@app.patch("/api/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: int, request: Request):
+    return await _forward("patch",
+                          f"{SERVICE_URLS['notification']}/api/notifications/{notification_id}/read",
+                          request=request)
+
+
+@app.patch("/api/notifications/read-all")
+async def mark_all_notifications_read(request: Request):
+    user_id = request.state.user_id
+    return await _forward("patch",
+                          f"{SERVICE_URLS['notification']}/api/notifications/{user_id}/read-all",
+                          request=request)
+
+
+@app.delete("/api/notifications/{notification_id}")
+async def delete_notification(notification_id: int, request: Request):
+    return await _forward("delete",
+                          f"{SERVICE_URLS['notification']}/api/notifications/{notification_id}",
+                          request=request)
+
+
+# ── Admin (需登录 + 管理员角色) ────────────────────────────────────
+
+@app.get("/api/admin/stats")
+async def admin_stats(request: Request):
+    """管理后台统计数据"""
+    if request.state.user_role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+    return await _forward("get", f"{SERVICE_URLS['user']}/api/admin/stats", request=request)
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+    """管理后台用户列表"""
+    if request.state.user_role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+    return await _forward("get", f"{SERVICE_URLS['user']}/api/admin/users",
+                          params=dict(request.query_params), request=request)
+
+
+@app.get("/api/admin/orders")
+async def admin_orders(request: Request):
+    """管理后台订单列表"""
+    if request.state.user_role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+    return await _forward("get", f"{SERVICE_URLS['order']}/api/admin/orders",
+                          params=dict(request.query_params), request=request)
+
+
+@app.get("/api/admin/favorites")
+async def admin_favorites(request: Request):
+    """管理后台收藏列表"""
+    if request.state.user_role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+    return await _forward("get", f"{SERVICE_URLS['order']}/api/admin/favorites",
+                          params=dict(request.query_params), request=request)
+
+
+@app.get("/api/admin/notifications")
+async def admin_notifications(request: Request):
+    """管理后台通知列表"""
+    if request.state.user_role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+    return await _forward("get", f"{SERVICE_URLS['notification']}/api/admin/notifications",
+                          params=dict(request.query_params), request=request)
 
 
 # ── 启动 ──────────────────────────────────────────────────────────

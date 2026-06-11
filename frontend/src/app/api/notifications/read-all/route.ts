@@ -1,35 +1,23 @@
 // ============================================================
 // PATCH /api/notifications/read-all
-// 标记所有通知为已读（清除缓存）
+// 标记所有通知为已读
+// 改为调用 Gateway
 // ============================================================
 
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-import { logApiError } from '@/lib/logger';
-import { getCurrentUser } from '@/lib/auth-utils';
-import { deleteCache, CACHE_KEYS } from '@/lib/redis';
+import { callGateway } from '@/lib/gateway';
 
 export async function PATCH() {
   try {
-    const auth = await getCurrentUser();
-    if (!auth) {
-      return NextResponse.json({ detail: '未登录' }, { status: 401 });
-    }
-
-    const result = await prisma.notification.updateMany({
-      where: {
-        userId: auth.userId,
-        isRead: false,
-      },
-      data: { isRead: true },
+    // 调用 Gateway 标记所有通知为已读
+    const { status: statusCode, data } = await callGateway({
+      method: 'PATCH',
+      path: '/api/notifications/read-all',
     });
 
-    // 清除未读数量缓存
-    await deleteCache(CACHE_KEYS.NOTIFICATION_UNREAD(auth.userId));
-
-    return NextResponse.json({ success: true, count: result.count });
+    return NextResponse.json(data, { status: statusCode });
   } catch (error) {
-    logApiError('/api/notifications/read-all', 'PATCH', error as Error);
+    console.error('Mark all notifications read error:', error);
     return NextResponse.json({ detail: '操作失败' }, { status: 500 });
   }
 }
