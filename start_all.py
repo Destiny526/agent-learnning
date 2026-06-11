@@ -53,11 +53,13 @@ signal.signal(signal.SIGTERM, signal_handler)
 def check_service(name: str, process: subprocess.Popen) -> bool:
     """检查服务是否运行正常"""
     if process.poll() is not None:
-        print(f"  ✗ {name} 启动失败!")
+        print(f"  [FAIL] {name} 启动失败!")
         # 打印错误信息
-        stderr = process.stderr.read().decode("utf-8", errors="ignore")
+        stderr = process.stderr.read().decode("utf-8", errors="replace")
         if stderr:
-            print(f"    错误: {stderr[:500]}")
+            # 替换无法在当前终端编码的字符
+            safe_stderr = stderr.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8", errors="replace")
+            print(f"    错误: {safe_stderr[:500]}")
         return False
     return True
 
@@ -117,7 +119,7 @@ def main():
     all_running = True
     for name, process in processes:
         if check_service(name, process):
-            print(f"  ✓ {name} 已启动")
+            print(f"  [OK] {name} 已启动")
         else:
             all_running = False
 
@@ -162,9 +164,9 @@ def main():
                         time.sleep(2)
 
                         if check_service(name, new_process):
-                            print(f"  ✓ {name} 重启成功")
+                            print(f"  [OK] {name} 重启成功")
                         else:
-                            print(f"  ✗ {name} 重启失败")
+                            print(f"  [FAIL] {name} 重启失败")
                         break
 
 
